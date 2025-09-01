@@ -1,0 +1,1422 @@
+import React, { useState, useEffect, useCallback, createContext, useContext, useMemo, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, onSnapshot, writeBatch, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { ChevronLeft, ChevronDown, ChevronUp, Home, Search, Library, Play, Pause, SkipForward, SkipBack, Shuffle, Repeat, X, MoreVertical, Download, Wifi, WifiOff, Settings as SettingsIcon, Mic, LogOut, Music2, Maximize2, ListPlus, User, Disc, Share2, Volume2, VolumeX, Trash2, ListMusic, MessageSquareText, UsersRound } from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : { apiKey: "YOUR_API_KEY", authDomain: "YOUR_AUTH_DOMAIN", projectId: "YOUR_PROJECT_ID", storageBucket: "YOUR_STORAGE_BUCKET", messagingSenderId: "YOUR_MESSAGING_SENDER_ID", appId: "YOUR_APP_ID" };
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'music-app-simulator';
+
+let app, db, auth;
+try {
+    app = initializeApp(firebaseConfig);
+    db = getFirestore(app);
+    auth = getAuth(app);
+} catch (error) {
+    console.error("Error initializing Firebase:", error);
+    db = null;
+    auth = null;
+}
+
+// --- Global State / Context ---
+const AppContext = createContext();
+const useAppContext = () => useContext(AppContext);
+
+// --- Mock Data with Timed Lyrics, Audio URLs, and Theme Colors ---
+const AVERAGE_SONG_SIZE_MB = 5; 
+const MOCK_SONGS = [
+    { 
+        id: 's1', title: 'Bohemian Rhapsody (Sample)', artist: 'Queen (SoundHelix)', album: 'A Night at the Opera', duration: '5:55', durationSeconds: 355, 
+        artworkUrl: 'https://placehold.co/400x400/2d3748/edf2f7?text=Queen%0AOpera', 
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+        themeColor: '#4A0E5D', 
+        simulatedSizeMB: 7.2,
+        timedLyrics: [
+            { time: 0, line: "Is this the real life?" }, { time: 3, line: "Is this just fantasy?" },
+            { time: 7, line: "Caught in a landslide," }, { time: 10, line: "No escape from reality." },
+            { time: 14, line: "Open your eyes," }, { time: 17, line: "Look up to the skies and see," },
+            { time: 21, line: "I'm just a poor boy, I need no sympathy," },
+            { time: 27, line: "Because I'm easy come, easy go," }, { time: 30, line: "Little high, little low," },
+            { time: 34, line: "Any way the wind blows doesn't really matter to me, to me." },
+            { time: 40, line: "Mama, just killed a man," }, { time: 44, line: "Put a gun against his head, pulled my trigger, now he's dead." },
+            { time: 49, line: "Mama, life had just begun," }, { time: 53, line: "But now I've gone and thrown it all away." }
+        ]
+    },
+    { 
+        id: 's2', title: 'Shape of You (Sample)', artist: 'Ed Sheeran (SoundHelix)', album: '÷ (Divide)', duration: '3:53', durationSeconds: 233, 
+        artworkUrl: 'https://placehold.co/400x400/3b82f6/e0f2fe?text=Ed+Sheeran%0ADivide',
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3',
+        themeColor: '#008080', 
+        simulatedSizeMB: 4.5,
+        timedLyrics: [
+            { time: 0, line: "The club isn't the best place to find a lover" }, { time: 3, line: "So the bar is where I go" },
+            { time: 6, line: "Me and my friends at the table doing shots" }, { time: 9, line: "Drinking fast and then we talk slow" },
+            { time: 12, line: "Come over and start up a conversation with just me" }, { time: 15, line: "And trust me I'll give it a chance now" }
+        ]
+    },
+    { 
+        id: 's3', title: 'Blinding Lights (Sample)', artist: 'The Weeknd (SoundHelix)', album: 'After Hours', duration: '3:20', durationSeconds: 200, 
+        artworkUrl: 'https://placehold.co/400x400/ef4444/fee2e2?text=The+Weeknd%0AAfter+Hours',
+        audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3',
+        themeColor: '#D9534F', 
+        simulatedSizeMB: 3.8,
+        timedLyrics: [
+            { time: 1, line: "I've been tryna call" }, { time: 4, line: "I've been on my own for long enough" },
+            { time: 8, line: "Maybe you can show me how to love, maybe" }, { time: 12, line: "I'm going through withdrawals" }
+        ]
+    },
+    { id: 's4', title: 'Stairway to Heaven (No Audio)', artist: 'Led Zeppelin', album: 'Led Zeppelin IV', duration: '8:02', durationSeconds: 482, artworkUrl: 'https://placehold.co/400x400/ca8a04/fefce8?text=Led+Zep%0AIV', themeColor: '#B8860B', simulatedSizeMB: 9.1, timedLyrics: [{time: 0, line: "There's a lady who's sure all that glitters is gold"}, {time: 5, line: "And she's buying a stairway to heaven."}]},
+    { id: 's5', title: 'Hotel California (No Audio)', artist: 'Eagles', album: 'Hotel California', duration: '6:30', durationSeconds: 390, artworkUrl: 'https://placehold.co/400x400/f97316/ffedd5?text=Eagles%0AHotel+CA', themeColor: '#DAA520', simulatedSizeMB: 6.5, timedLyrics: [{time: 0, line: "On a dark desert highway, cool wind in my hair"}, {time: 5, line: "Warm smell of colitas, rising up through the air"}]},
+    { id: 's6', title: 'Imagine (Sample)', artist: 'John Lennon (SoundHelix)', album: 'Imagine', duration: '3:04', durationSeconds: 184, artworkUrl: 'https://placehold.co/400x400/60a5fa/eff6ff?text=Lennon%0AImagine', audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3', themeColor: '#ADD8E6', simulatedSizeMB: 3.2, timedLyrics: [{time: 0, line: "Imagine there's no heaven"}, {time: 3, line: "It's easy if you try"}]},
+    { id: 's7', title: 'Like a Rolling Stone (No Audio)', artist: 'Bob Dylan', album: 'Highway 61 Revisited', duration: '6:13', durationSeconds: 373, artworkUrl: 'https://placehold.co/400x400/78350f/fef3c7?text=Dylan%0AHighway+61', themeColor: '#704214', simulatedSizeMB: 6.0, timedLyrics: [{time: 0, line: "Once upon a time you dressed so fine"}, {time: 4, line: "Threw the bums a dime in your prime, didn't you?"}]},
+    { id: 's8', title: 'Hey Jude (Sample)', artist: 'The Beatles (SoundHelix)', album: 'Hey Jude', duration: '7:11', durationSeconds: 431, artworkUrl: 'https://placehold.co/400x400/facc15/fefce8?text=Beatles%0AHey+Jude', audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3', themeColor: '#FFD700', simulatedSizeMB: 8.2, timedLyrics: [{time: 0, line: "Hey Jude, don't make it bad"}, {time: 4, line: "Take a sad song and make it better"}]},
+    { id: 's9', title: 'Smells Like Teen Spirit (No Audio)', artist: 'Nirvana', album: 'Nevermind', duration: '5:01', durationSeconds: 301, artworkUrl: 'https://placehold.co/400x400/166534/dcfce7?text=Nirvana%0ANevermind', themeColor: '#556B2F', simulatedSizeMB: 5.5, timedLyrics: [{time: 0, line: "Load up on guns, bring your friends"}, {time: 3, line: "It's fun to lose and to pretend"}]},
+    { id: 's10', title: 'Wonderwall (Sample)', artist: 'Oasis (SoundHelix)', album: '(What\'s the Story) Morning Glory?', duration: '4:18', durationSeconds: 258, artworkUrl: 'https://placehold.co/400x400/0ea5e9/e0f2fe?text=Oasis%0AWonderwall', audioUrl: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3', themeColor: '#007BA7', simulatedSizeMB: 4.8, timedLyrics: [{time: 0, line: "Today is gonna be the day that they're gonna throw it back to you"}, {time: 5, line: "By now you should've somehow realized what you gotta do"}]},
+];
+const MOCK_PLAYLISTS = [
+    { id: 'p1', name: 'Chill Vibes', songIds: ['s2', 's6', 's10'] , artworkUrl: 'https://placehold.co/200x200/4fd1c5/81e6d9?text=Chill&font=Inter'},
+    { id: 'p2', name: 'Rock Classics', songIds: ['s1', 's4', 's5', 's7', 's9'], artworkUrl: 'https://placehold.co/200x200/f6ad55/fbd38d?text=Rock&font=Inter' },
+    { id: 'p3', name: 'Workout Mix', songIds: ['s3', 's9'], artworkUrl: 'https://placehold.co/200x200/68d391/9ae6b4?text=Workout&font=Inter' },
+];
+const STORAGE_LIMITS = { free: 50, premium: 200 }; 
+const SIMULATED_STORAGE_CAPACITY_MB = { free: 3000, premium: 10000 }; 
+const SWIPE_THRESHOLD = 50; 
+const SWIPE_VERTICAL_BIAS = 1.5; 
+
+// --- Helper Functions ---
+const formatDuration = (seconds) => {
+    if (isNaN(seconds) || seconds < 0) return '0:00';
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60);
+    return `${minutes}:${remainingSeconds < 10 ? '0' : ''}${remainingSeconds}`;
+};
+
+// --- Modal ---
+const Modal = ({ isOpen, onClose, title, children }) => {
+    if (!isOpen) return null;
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4 transition-opacity duration-300 ease-in-out" aria-modal="true" role="dialog">
+            <div className="bg-neutral-800 p-6 rounded-xl shadow-2xl w-full max-w-md text-white transform transition-all duration-300 ease-in-out scale-95 group-hover:scale-100">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-semibold" id="modal-title">{title}</h3>
+                    <button onClick={onClose} className="text-neutral-400 hover:text-white p-1 rounded-full hover:bg-neutral-700 transition-colors" aria-label="Close modal">
+                        <X size={24} />
+                    </button>
+                </div>
+                <div aria-labelledby="modal-title">{children}</div>
+            </div>
+        </div>
+    );
+};
+
+// --- SongItem ---
+const SongItem = React.memo(({ song, onPlay, onDownload, isDownloaded, onRemoveDownload, showDownloadStatus = true, showRemoveButton = false }) => {
+    const { isOnline, profile, showMessage } = useAppContext();
+    const canDownload = profile && (profile.downloadedSongIds?.length || 0) < STORAGE_LIMITS[profile.plan];
+
+    const handleDownloadClick = (e) => {
+        e.stopPropagation();
+        if (!isOnline && !isDownloaded) {
+             showMessage("Connect to internet to download songs.", "error"); return;
+        }
+        if (isDownloaded) onRemoveDownload(song.id);
+        else {
+            if (!song.audioUrl) {
+                showMessage("This song is not available for download in this demo.", "info"); return;
+            }
+            if (canDownload) onDownload(song.id);
+            else showMessage(`Storage limit reached for ${profile.plan} plan. Upgrade for more.`, "info");
+        }
+    };
+    
+    const handleRemoveClick = (e) => {
+        e.stopPropagation();
+        onRemoveDownload(song.id);
+    }
+
+    return (
+        <div className="flex items-center p-3 hover:bg-neutral-700/80 rounded-lg transition-all duration-200 ease-in-out group transform hover:scale-[1.01]" role="button" tabIndex={0} onClick={() => onPlay(song)} onKeyPress={(e) => e.key === 'Enter' && onPlay(song)}>
+            <img src={song.artworkUrl || 'https://placehold.co/64x64/333/555?text=Song&font=Inter'} alt={song.title} className="w-12 h-12 rounded-md mr-4 object-cover shadow-md" />
+            <div className="flex-grow min-w-0">
+                <p className="text-white font-medium truncate group-hover:text-green-400 transition-colors">{song.title}</p>
+                <p className="text-neutral-400 text-sm truncate">{song.artist}</p>
+            </div>
+            {showDownloadStatus && !showRemoveButton && (
+                <button
+                    onClick={handleDownloadClick}
+                    className={`p-2 rounded-full mr-2 flex-shrink-0 transition-colors ${(!isOnline && !isDownloaded) || !song.audioUrl ? 'opacity-50 cursor-not-allowed' : 'hover:bg-neutral-600 hover:text-white'}`}
+                    title={!song.audioUrl ? "Not downloadable (demo)" : (isDownloaded ? "Remove from downloads" : (isOnline ? "Download" : "Download (Offline - Requires Connection)"))}
+                    disabled={(!isOnline && !isDownloaded) || !song.audioUrl}
+                    aria-label={isDownloaded ? "Remove from downloads" : "Download song"}
+                >
+                    <Download size={20} className={isDownloaded ? "text-green-400" : "text-neutral-400"} />
+                </button>
+            )}
+            {showRemoveButton && (
+                 <button
+                    onClick={handleRemoveClick}
+                    className="p-2 rounded-full mr-2 flex-shrink-0 text-red-500 hover:text-red-400 hover:bg-red-500/10 transition-colors"
+                    title="Remove from downloads"
+                    aria-label="Remove from downloads"
+                >
+                    <Trash2 size={20} />
+                </button>
+            )}
+            <button onClick={(e) => { e.stopPropagation(); onPlay(song); }} className="p-2 rounded-full hover:bg-green-500 hover:text-black opacity-0 group-hover:opacity-100 transition-all duration-200 ease-in-out transform group-hover:scale-110 flex-shrink-0" aria-label={`Play ${song.title}`}>
+                <Play size={20} className="text-white group-hover:text-black" />
+            </button>
+        </div>
+    );
+});
+
+// --- Top Navigation Bar for HomeScreen ---
+const TopNavBar = ({ onSearchClick, onLibraryClick, onSettingsClick }) => {
+    return (
+        <div className="sticky top-0 z-20 bg-neutral-900/80 backdrop-blur-md p-4 flex items-center justify-between shadow-sm h-20">
+            <div 
+                onClick={onSearchClick} 
+                className="flex items-center bg-neutral-700/70 hover:bg-neutral-600/70 rounded-full p-2.5 cursor-pointer transition-colors flex-grow mr-3"
+                role="button"
+                aria-label="Search for music"
+                tabIndex={0}
+                onKeyPress={(e) => e.key === 'Enter' && onSearchClick()}
+            >
+                <Search size={20} className="text-neutral-400 mr-2.5 ml-1" />
+                <span className="text-neutral-400 text-sm">Search songs, artists...</span>
+            </div>
+            <div className="flex items-center space-x-2">
+                <button onClick={onLibraryClick} className="p-2.5 rounded-full text-neutral-300 hover:text-white hover:bg-neutral-700/50 transition-colors" aria-label="Open Library">
+                    <Library size={22} />
+                </button>
+                <button onClick={onSettingsClick} className="p-2.5 rounded-full text-neutral-300 hover:text-white hover:bg-neutral-700/50 transition-colors" aria-label="Open Settings">
+                    <SettingsIcon size={22} />
+                </button>
+            </div>
+        </div>
+    );
+};
+
+
+// --- HomeScreen ---
+const HomeScreen = () => {
+    const { setCurrentPage, allSongs, playlists, playSong, isOnline, profile, downloadSong, removeDownloadedSong, showMessage } = useAppContext();
+    const [greeting, setGreeting] = useState('');
+    useEffect(() => {
+        const hour = new Date().getHours();
+        if (hour < 12) setGreeting('Good morning');
+        else if (hour < 18) setGreeting('Good afternoon');
+        else setGreeting('Good evening');
+    }, []);
+    
+    const displaySongs = useMemo(() => isOnline ? allSongs : allSongs.filter(s => profile?.downloadedSongIds?.includes(s.id)), [isOnline, allSongs, profile]);
+    const quickPicks = useMemo(() => displaySongs.filter(s => s.audioUrl).slice(0, 6), [displaySongs]);
+    const madeForYou = useMemo(() => {
+        const pickIds = quickPicks.map(s => s.id);
+        return displaySongs.filter(s => s.audioUrl && !pickIds.includes(s.id)).slice(0,5).map(s => ({...s, type: 'song'}));
+    }, [displaySongs, quickPicks]);
+
+    const handlePlayPlaylist = (playlist) => {
+        if (!playlist.songIds || playlist.songIds.length === 0) { showMessage("This playlist is empty.", "info"); return; }
+        const firstPlayableSongId = playlist.songIds.find(id => allSongs.find(s => s.id === id && s.audioUrl));
+        if (!firstPlayableSongId) { showMessage("No playable songs in this playlist.", "info"); return; }
+        const songToPlay = allSongs.find(s => s.id === firstPlayableSongId);
+        if (songToPlay) {
+            if (!isOnline && !profile?.downloadedSongIds?.includes(songToPlay.id)) {
+                showMessage("This song is not downloaded. Connect to internet or download it.", "warning"); return;
+            }
+            playSong(songToPlay, playlist.songIds);
+        } else { showMessage("Could not find the first song of the playlist.", "error"); }
+    };
+    return (
+        <div className="flex flex-col h-full"> 
+            <TopNavBar 
+                onSearchClick={() => setCurrentPage('search')}
+                onLibraryClick={() => setCurrentPage('library')}
+                onSettingsClick={() => setCurrentPage('settings')}
+            />
+            <div className="p-4 md:p-6 space-y-10 overflow-y-auto flex-grow">
+                <h1 className="text-3xl font-bold text-white mt-2">{greeting}</h1>
+                {quickPicks.length > 0 && (
+                    <div>
+                        <h2 className="text-2xl font-semibold text-white mb-5">Quick Picks</h2>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-5">
+                            {quickPicks.map(song => (
+                                <div key={song.id} onClick={() => playSong(song)} className="bg-neutral-800/60 hover:bg-neutral-700/80 p-3 rounded-lg cursor-pointer flex items-center transition-all duration-200 ease-in-out shadow-md hover:shadow-xl transform hover:scale-[1.02]" role="button" tabIndex={0} onKeyPress={(e) => e.key === 'Enter' && playSong(song)}>
+                                    <img src={song.artworkUrl} alt={song.title} className="w-14 h-14 rounded-md mr-4 object-cover flex-shrink-0 shadow" />
+                                    <p className="text-white font-medium text-sm truncate min-w-0 group-hover:text-green-300 transition-colors">{song.title}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                {playlists && playlists.length > 0 && (
+                    <div>
+                        <h2 className="text-2xl font-semibold text-white mb-5">Your Playlists</h2>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
+                            {playlists.map(playlist => (
+                                <div key={playlist.id} onClick={() => handlePlayPlaylist(playlist)} className="bg-neutral-800/90 p-4 rounded-xl hover:bg-neutral-700/90 cursor-pointer transition-all duration-200 ease-in-out space-y-3 shadow-lg hover:shadow-green-500/20 transform hover:-translate-y-1" role="button" tabIndex={0} onKeyPress={(e) => e.key === 'Enter' && handlePlayPlaylist(playlist)}>
+                                    <img src={playlist.artworkUrl || 'https://placehold.co/200x200/333/555?text=Playlist&font=Inter'} alt={playlist.name} className="w-full aspect-square object-cover rounded-lg shadow-md" />
+                                    <p className="text-white font-semibold truncate pt-1">{playlist.name}</p>
+                                    <p className="text-neutral-400 text-xs">{playlist.songIds?.length || 0} songs</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                {isOnline && madeForYou.length > 0 && (
+                    <div>
+                        <h2 className="text-2xl font-semibold text-white mb-5">Made For You</h2>
+                        <div className="flex space-x-5 overflow-x-auto pb-5 -mx-4 px-4 scrollbar-thin scrollbar-thumb-neutral-600 scrollbar-track-transparent">
+                            {madeForYou.map(item => (
+                                <div key={item.id} onClick={() => playSong(item)} className="bg-neutral-800/90 p-4 rounded-xl hover:bg-neutral-700/90 cursor-pointer transition-all duration-200 ease-in-out w-44 flex-shrink-0 shadow-lg hover:shadow-purple-500/20 transform hover:-translate-y-1" role="button" tabIndex={0} onKeyPress={(e) => e.key === 'Enter' && playSong(item)}>
+                                    <img src={item.artworkUrl} alt={item.title} className="w-full h-36 object-cover rounded-lg mb-3 shadow-md" />
+                                    <p className="text-white font-semibold truncate text-sm">{item.title}</p>
+                                    <p className="text-neutral-400 text-xs truncate">{item.artist}</p>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                <div>
+                    <h2 className="text-2xl font-semibold text-white mb-4">Browse All Songs (Demo)</h2>
+                     {displaySongs.map(song => (
+                        <SongItem key={song.id} song={song} onPlay={playSong} onDownload={downloadSong}
+                            onRemoveDownload={removeDownloadedSong} isDownloaded={profile?.downloadedSongIds?.includes(song.id)}
+                        />
+                    ))}
+                     {displaySongs.length === 0 && ( <p className="text-neutral-400 text-center mt-4">{isOnline ? "No songs available." : "No downloaded songs."}</p> )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- SearchScreen ---
+const SearchScreen = () => {
+    const { setCurrentPage, allSongs, playSong, isOnline, profile, downloadSong, removeDownloadedSong } = useAppContext();
+    const [searchTerm, setSearchTerm] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    useEffect(() => {
+        if (searchTerm.trim() === '') { setSearchResults([]); return; }
+        const availableSongs = isOnline ? allSongs : allSongs.filter(s => profile?.downloadedSongIds?.includes(s.id));
+        const lowerSearchTerm = searchTerm.toLowerCase();
+        const filtered = availableSongs.filter(song =>
+            song.title.toLowerCase().includes(lowerSearchTerm) ||
+            song.artist.toLowerCase().includes(lowerSearchTerm) ||
+            song.album.toLowerCase().includes(lowerSearchTerm)
+        );
+        setSearchResults(filtered);
+    }, [searchTerm, allSongs, isOnline, profile]);
+    return (
+        <div className="p-4 md:p-6 flex flex-col h-full">
+             <div className="flex items-center mb-6 -mx-4 px-4 md:-mx-6 md:px-6 pt-2 pb-3 bg-neutral-900 sticky top-0 z-10 shadow-sm h-20">
+                <button onClick={() => setCurrentPage('home')} className="p-2 text-neutral-300 hover:text-white mr-2 rounded-full hover:bg-neutral-700/50 transition-colors" aria-label="Back to Home">
+                    <ChevronLeft size={28} />
+                </button>
+                <div className="flex items-center bg-neutral-700/80 rounded-full p-1.5 shadow-md flex-grow">
+                    <span className="pl-4 pr-2 text-neutral-300"><Search size={22} /></span>
+                    <input
+                        type="text" placeholder={isOnline ? "Search songs, artists, albums..." : "Search downloaded music"}
+                        className="w-full bg-transparent text-white placeholder-neutral-400 focus:outline-none py-3 text-base"
+                        value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+                        aria-label="Search music" autoFocus
+                    />
+                    {searchTerm && (
+                        <button onClick={() => setSearchTerm('')} className="p-2 text-neutral-400 hover:text-white mr-1 rounded-full hover:bg-neutral-600 transition-colors" aria-label="Clear search">
+                            <X size={20} />
+                        </button>
+                    )}
+                </div>
+                 <button onClick={() => setCurrentPage('library')} className="p-3 text-neutral-300 hover:text-white rounded-full ml-2 bg-neutral-700/80 hover:bg-neutral-600/80 transition-colors" aria-label="Open Library">
+                    <Library size={20} />
+                </button>
+            </div>
+            <div className="flex-grow overflow-y-auto">
+                {searchResults.length > 0 ? (
+                    searchResults.map(song => (
+                        <SongItem key={song.id} song={song} onPlay={playSong} onDownload={downloadSong}
+                            onRemoveDownload={removeDownloadedSong} isDownloaded={profile?.downloadedSongIds?.includes(song.id)}
+                        />
+                    ))
+                ) : (
+                    searchTerm.trim() !== '' && <p className="text-neutral-400 text-center mt-8">No results found for "{searchTerm}".</p>
+                )}
+                {searchTerm.trim() === '' && (
+                    <div className="text-center text-neutral-500 mt-16 flex flex-col items-center">
+                        <Search size={56} className="mx-auto mb-6 text-neutral-600" />
+                        <p className="text-lg">{isOnline ? "Search the world of music" : "Search your downloaded library"}</p>
+                        {!isOnline && <p className="text-sm mt-2">Connect to the internet for global search.</p>}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+// --- PlayerScreen ---
+const PlayerScreen = ({ song, onClose, onNext, onPrev, queue, isFullScreen }) => {
+    const { isOnline, profile, allSongs, playSong, downloadSong, removeDownloadedSong, showMessage, isPlaying: globalIsPlaying, setIsPlaying: setGlobalIsPlaying, playlists, addSongToPlaylist, audioRef, setCurrentTime, currentAudioTime, audioDuration } = useAppContext();
+    
+    const [activeInfoTab, setActiveInfoTab] = useState('upNext'); 
+    const [isShuffle, setIsShuffle] = useState(false);
+    const [repeatModeInternal, setRepeatModeInternal] = useState('none');
+    const [isMoreOptionsOpen, setIsMoreOptionsOpen] = useState(false);
+    const [showAddToPlaylistModal, setShowAddToPlaylistModal] = useState(false);
+    const [volume, setVolume] = useState(1);
+    const [isMuted, setIsMuted] = useState(false);
+    const [isTabsSectionExpanded, setIsTabsSectionExpanded] = useState(false);
+
+    const touchStartY = useRef(0);
+    const touchStartX = useRef(0);
+    const playerScreenRef = useRef(null);
+    const mainPlayerContentRef = useRef(null); 
+    const expandedTabsContentRef = useRef(null); 
+
+    const activeLyricRef = useRef(null);
+    const lyricsContainerRef = useRef(null);
+
+    useEffect(() => { setIsMoreOptionsOpen(false); setIsTabsSectionExpanded(false); setActiveInfoTab('upNext'); }, [song]);
+
+    if (!song) return null;
+
+    const progressPercent = audioDuration > 0 ? (currentAudioTime / audioDuration) * 100 : 0;
+
+    const currentLyricIndex = useMemo(() => {
+        if (!song.timedLyrics || song.timedLyrics.length === 0) return -1;
+        let i = song.timedLyrics.length - 1;
+        while (i >= 0) { if (song.timedLyrics[i].time <= currentAudioTime) return i; i--; }
+        return 0;
+    }, [song.timedLyrics, currentAudioTime]);
+
+    useEffect(() => {
+        if (activeLyricRef.current && lyricsContainerRef.current) {
+            lyricsContainerRef.current.scrollTo({
+                top: activeLyricRef.current.offsetTop - (lyricsContainerRef.current.clientHeight / 3),
+                behavior: 'smooth'
+            });
+        }
+    }, [currentLyricIndex, activeInfoTab, isTabsSectionExpanded]);
+
+    const songIsDownloaded = profile?.downloadedSongIds?.includes(song.id);
+    const canDownload = profile && (profile.downloadedSongIds?.length || 0) < STORAGE_LIMITS[profile.plan];
+
+    const handleDownloadToggle = () => {
+        if (!isOnline && !songIsDownloaded) { showMessage("Connect to internet to download songs.", "error"); return; }
+        if (songIsDownloaded) removeDownloadedSong(song.id);
+        else {
+            if (!song.audioUrl) { showMessage("This song is not available for download in this demo.", "info"); return; }
+            if (canDownload) downloadSong(song.id);
+            else showMessage(`Storage limit reached for ${profile.plan} plan. Upgrade for more.`, "info");
+        }
+        setIsMoreOptionsOpen(false);
+    };
+    
+    const recommendedSongs = useMemo(() => {
+        if(!isOnline) return [];
+        const otherSongs = allSongs.filter(s => s.id !== song.id && s.audioUrl);
+        return otherSongs.sort(() => 0.5 - Math.random()).slice(0, 10);
+    }, [allSongs, song, isOnline]);
+
+    const toggleRepeatMode = () => {
+        const newMode = repeatModeInternal === 'none' ? 'all' : repeatModeInternal === 'all' ? 'one' : 'none';
+        setRepeatModeInternal(newMode);
+        if (audioRef.current) {
+            audioRef.current.loop = newMode === 'one';
+        }
+    };
+
+    const handlePlayPause = () => setGlobalIsPlaying(!globalIsPlaying);
+    const handleProgressChange = (event) => setCurrentTime( (parseInt(event.target.value) / 100) * audioDuration );
+    const handleAddToPlaylist = async (playlistId) => {
+        await addSongToPlaylist(playlistId, song.id);
+        setShowAddToPlaylistModal(false); setIsMoreOptionsOpen(false);
+    };
+    const handleVolumeChange = (event) => {
+        const newVolume = parseFloat(event.target.value);
+        setVolume(newVolume);
+        if (audioRef.current) audioRef.current.volume = newVolume;
+        setIsMuted(newVolume === 0);
+    };
+    const toggleMute = () => {
+        if (audioRef.current) {
+            if (isMuted) {
+                audioRef.current.volume = volume > 0 ? volume : 0.5;
+                setVolume(audioRef.current.volume);
+                setIsMuted(false);
+            } else {
+                audioRef.current.volume = 0;
+                setIsMuted(true);
+            }
+        }
+    };
+
+    const handleMainPlayerTouchStart = (e) => {
+        if (e.target.closest('input[type="range"], button.p-5, button.p-3, .player-tab-nav-button')) return; 
+        touchStartY.current = e.targetTouches[0].clientY;
+        touchStartX.current = e.targetTouches[0].clientX;
+    };
+
+    const handleMainPlayerTouchEnd = (e) => {
+        if (touchStartY.current === 0 && touchStartX.current === 0) return;
+        const touchEndY = e.changedTouches[0].clientY;
+        const touchEndX = e.changedTouches[0].clientX;
+        const deltaY = touchEndY - touchStartY.current;
+        const deltaX = touchEndX - touchStartX.current;
+
+        if (Math.abs(deltaY) > Math.abs(deltaX) * SWIPE_VERTICAL_BIAS) { 
+            if (deltaY > SWIPE_THRESHOLD && !isTabsSectionExpanded) { 
+                onClose(); 
+            } else if (deltaY < -SWIPE_THRESHOLD && !isTabsSectionExpanded) {
+                setIsTabsSectionExpanded(true);
+            }
+        } else if (Math.abs(deltaX) > SWIPE_THRESHOLD && !isTabsSectionExpanded) {
+            if (deltaX > SWIPE_THRESHOLD) { 
+                onPrev();
+            } else if (deltaX < -SWIPE_THRESHOLD) { 
+                onNext();
+            }
+        }
+        touchStartY.current = 0;
+        touchStartX.current = 0;
+    };
+    
+    const handleExpandedTabsTouchStart = (e) => {
+        if (e.target.closest('button, a, input')) return;
+        touchStartY.current = e.targetTouches[0].clientY;
+    };
+    const handleExpandedTabsTouchEnd = (e) => {
+        if (touchStartY.current === 0) return;
+        const touchEndY = e.changedTouches[0].clientY;
+        const deltaY = touchEndY - touchStartY.current;
+        if (deltaY > SWIPE_THRESHOLD) { 
+            setIsTabsSectionExpanded(false);
+        }
+        touchStartY.current = 0;
+    };
+
+    const tabHeadingStyle = song.themeColor ? { color: song.themeColor } : {};
+
+    return (
+        <div 
+            ref={playerScreenRef}
+            className={`fixed inset-0 text-white flex flex-col z-40 transition-transform duration-300 ease-in-out ${isFullScreen ? 'translate-y-0' : 'translate-y-full'}`} 
+            data-repeat-mode={repeatModeInternal}
+        >
+            <div className="absolute inset-0 w-full h-full bg-cover bg-center transition-all duration-1000 ease-in-out -z-10"
+                style={{ backgroundImage: `url(${song.artworkUrl})`, filter: 'blur(50px) brightness(0.6) saturate(1.2)', transform: 'scale(1.2)' }}
+            />
+            <div className="absolute inset-0 w-full h-full bg-gradient-radial from-black/10 via-black/60 to-black/90 -z-10"/>
+
+            <div className={`flex-shrink-0 transition-all duration-300 ease-in-out ${isTabsSectionExpanded ? 'h-20' : ''}`}>
+                {isTabsSectionExpanded ? (
+                    <div className="p-3 flex items-center justify-between bg-black/50 backdrop-blur-md h-full">
+                        <button onClick={() => setIsTabsSectionExpanded(false)} className="p-2 rounded-full hover:bg-white/10" aria-label="Collapse tabs view">
+                            <ChevronDown size={28} />
+                        </button>
+                        <div className="text-center mx-2 overflow-hidden">
+                            <p className="text-sm font-semibold truncate">{song.title}</p>
+                            <p className="text-xs text-neutral-400 truncate">{song.artist}</p>
+                        </div>
+                        <button onClick={handlePlayPause} className="p-2 rounded-full hover:bg-white/10" aria-label={globalIsPlaying ? "Pause" : "Play"}>
+                            {globalIsPlaying ? <Pause size={24} /> : <Play size={24} />}
+                        </button>
+                    </div>
+                ) : (
+                     <div className="p-4 flex justify-between items-center flex-shrink-0 relative">
+                        <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition-colors" aria-label="Minimize player"><ChevronDown size={28} /></button>
+                        <div className="text-center overflow-hidden mx-2">
+                            <p className="text-xs text-neutral-400 uppercase tracking-wider">Playing From Album</p>
+                            <p className="text-sm font-semibold truncate">{song.album}</p>
+                        </div>
+                        <button onClick={() => setIsMoreOptionsOpen(prev => !prev)} className="p-2 rounded-full text-neutral-300 hover:text-white hover:bg-white/10 transition-colors" aria-label="More options">
+                            <MoreVertical size={24} />
+                        </button>
+                        {isMoreOptionsOpen && (
+                            <div className="absolute top-16 right-4 bg-neutral-700/90 backdrop-blur-md rounded-lg shadow-2xl z-50 w-60 py-2 transition-all duration-150 ease-in-out origin-top-right">
+                                {[
+                                    { label: "View Artist", icon: User, action: () => showMessage(`Viewing artist: ${song.artist}`) },
+                                    { label: "View Album", icon: Disc, action: () => showMessage(`Viewing album: ${song.album}`) },
+                                    { label: "Add to Playlist", icon: ListPlus, action: () => setShowAddToPlaylistModal(true) },
+                                    { label: songIsDownloaded ? 'Remove Download' : 'Download Song', icon: Download, action: handleDownloadToggle },
+                                    { label: "Share", icon: Share2, action: () => showMessage(`Sharing ${song.title}...`) }
+                                ].map(item => (
+                                    <button key={item.label} onClick={() => { item.action(); setIsMoreOptionsOpen(false); }} className="w-full text-left px-4 py-3 text-sm hover:bg-neutral-600/80 flex items-center transition-colors duration-150">
+                                        <item.icon size={18} className="mr-3 text-neutral-300"/>{item.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+            
+            <div 
+                ref={mainPlayerContentRef}
+                onTouchStart={handleMainPlayerTouchStart}
+                onTouchEnd={handleMainPlayerTouchEnd}
+                className={`flex-grow flex flex-col items-center justify-center p-4 md:p-8 space-y-6 overflow-y-auto transition-opacity duration-300 ease-in-out ${isTabsSectionExpanded ? 'opacity-0 h-0 pointer-events-none' : 'opacity-100'}`}
+                style={{ touchAction: 'pan-y pan-x' }}
+            >
+                <img src={song.artworkUrl} alt={song.title} className="w-64 h-64 md:w-80 md:h-80 rounded-xl shadow-2xl object-cover" />
+                <div className="text-center">
+                    <h2 className="text-3xl md:text-4xl font-bold tracking-tight">{song.title}</h2>
+                    <p className="text-neutral-300 text-lg mt-1">{song.artist}</p>
+                </div>
+                <div className="w-full max-w-md px-4">
+                    <input type="range" min="0" max="100" value={isNaN(progressPercent) ? 0 : progressPercent} onChange={handleProgressChange}
+                        className="w-full h-2 bg-neutral-600/70 rounded-full appearance-none cursor-pointer accent-green-500 focus:outline-none focus:ring-2 focus:ring-green-600 focus:ring-opacity-50"
+                        aria-label="Song progress"
+                    />
+                    <div className="flex justify-between text-xs text-neutral-400 mt-1.5">
+                        <span>{formatDuration(currentAudioTime)}</span>
+                        <span>{formatDuration(audioDuration)}</span>
+                    </div>
+                </div>
+                <div className="flex items-center justify-evenly w-full max-w-lg space-x-4 md:space-x-6">
+                    <button onClick={() => setIsShuffle(!isShuffle)} className={`p-3 rounded-full ${isShuffle ? 'text-green-400 bg-green-400/10' : 'text-neutral-400'} hover:text-white hover:bg-white/10 transition-all`} aria-label="Shuffle"><Shuffle size={20} /></button>
+                    <button onClick={onPrev} className="p-3 rounded-full text-neutral-200 hover:text-white hover:bg-white/10 transition-all" aria-label="Previous"><SkipBack size={30} /></button>
+                    <button onClick={handlePlayPause} className="p-5 bg-white text-black rounded-full shadow-lg hover:scale-105 transition-transform" aria-label={globalIsPlaying ? "Pause" : "Play"}>{globalIsPlaying ? <Pause size={30} /> : <Play size={30} />}</button>
+                    <button onClick={onNext} className="p-3 rounded-full text-neutral-200 hover:text-white hover:bg-white/10 transition-all" aria-label="Next"><SkipForward size={30} /></button>
+                    <button onClick={toggleRepeatMode} className={`p-3 rounded-full ${repeatModeInternal !== 'none' ? 'text-green-400 bg-green-400/10' : 'text-neutral-400'} hover:text-white hover:bg-white/10 relative transition-all`} aria-label="Repeat">
+                        <Repeat size={20} />
+                        {repeatModeInternal === 'one' && <span className="absolute top-0 right-0 text-[10px] bg-green-500 text-white rounded-full w-3.5 h-3.5 flex items-center justify-center font-bold">1</span>}
+                    </button>
+                </div>
+                <div className="flex items-center space-x-2 w-full max-w-xs mt-4">
+                    <button onClick={toggleMute} className="p-2 text-neutral-400 hover:text-white" aria-label={isMuted ? "Unmute" : "Mute"}>{isMuted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}</button>
+                    <input type="range" min="0" max="1" step="0.01" value={isMuted ? 0 : volume} onChange={handleVolumeChange}
+                        className="w-full h-1.5 bg-neutral-600/70 rounded-full appearance-none cursor-pointer accent-green-400" aria-label="Volume"
+                    />
+                </div>
+                <button onClick={() => setIsTabsSectionExpanded(true)} className="mt-4 text-neutral-400 hover:text-white p-2" aria-label="Expand tabs view">
+                    <ChevronUp size={24} />
+                </button>
+            </div>
+            
+            <div 
+                ref={expandedTabsContentRef}
+                onTouchStart={isTabsSectionExpanded ? handleExpandedTabsTouchStart : undefined}
+                onTouchEnd={isTabsSectionExpanded ? handleExpandedTabsTouchEnd : undefined}
+                className={`flex-shrink-0 flex flex-col bg-black/30 backdrop-blur-sm transition-all duration-300 ease-in-out ${isTabsSectionExpanded ? 'flex-grow' : 'h-auto'}`}
+                style={{touchAction: isTabsSectionExpanded ? 'pan-y' : 'auto'}}
+            >
+                {!isTabsSectionExpanded && (
+                    <div className="border-t border-white/10">
+                        <div className="flex justify-around">
+                            {['upNext', 'lyrics', 'recommended'].map(tabName => (
+                                <button key={tabName} onClick={() => setActiveInfoTab(tabName)} disabled={tabName === 'recommended' && !isOnline}
+                                    className={`player-tab-nav-button py-3.5 px-4 text-sm font-medium w-full relative transition-colors duration-200 ${activeInfoTab === tabName ? 'text-white' : 'text-neutral-400 hover:text-neutral-100'} ${tabName === 'recommended' && !isOnline ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                    aria-selected={activeInfoTab === tabName} role="tab"
+                                >
+                                    {tabName === 'upNext' && 'Up Next'} {tabName === 'lyrics' && 'Lyrics'} {tabName === 'recommended' && 'Recommended'}
+                                    {activeInfoTab === tabName && <span className="absolute bottom-0 left-1/2 transform -translate-x-1/2 w-1/2 h-0.5 bg-green-500 rounded-full"></span>}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                <div 
+                    ref={lyricsContainerRef} 
+                    className={`overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-neutral-700 scrollbar-track-transparent ${isTabsSectionExpanded ? 'flex-grow' : 'h-48'}`} 
+                    role="tabpanel"
+                >
+                    {isTabsSectionExpanded ? ( 
+                        <div className="space-y-8">
+                            <div>
+                                <h3 className="text-xl font-semibold mb-3 sticky top-0 bg-black/50 backdrop-blur-sm py-2 z-10" style={tabHeadingStyle}>Up Next</h3>
+                                {queue.length > 0 ? queue.map((queuedSong, index) => (
+                                    <div key={`${queuedSong.id}-${index}-exp-upnext`} className="flex items-center p-2.5 hover:bg-white/5 rounded-lg group transition-colors">
+                                        <img src={queuedSong.artworkUrl} alt={queuedSong.title} className="w-10 h-10 rounded-md mr-3 flex-shrink-0 shadow" />
+                                        <div className="flex-grow min-w-0"><p className="text-neutral-200 text-sm truncate">{queuedSong.title}</p><p className="text-neutral-500 text-xs truncate">{queuedSong.artist}</p></div>
+                                        <button onClick={() => playSong(queuedSong, queue.slice(index).map(s => s.id))} className="p-1.5 rounded-full opacity-0 group-hover:opacity-100 hover:bg-green-500 ml-2 flex-shrink-0 transition-all" aria-label={`Play ${queuedSong.title} from queue`}><Play size={18} className="text-white"/></button>
+                                    </div>
+                                )) : <p className="text-neutral-400">Queue is empty.</p>}
+                            </div>
+                            <div className="text-center">
+                                <h3 className="text-xl font-semibold mb-4 sticky top-0 bg-black/50 backdrop-blur-sm py-2 z-10" style={tabHeadingStyle}>Lyrics</h3>
+                                {(song.timedLyrics && song.timedLyrics.length > 0) ? (
+                                    song.timedLyrics.map((lyric, index) => (
+                                        <p key={`${song.id}-exp-lyric-${index}`} ref={index === currentLyricIndex ? activeLyricRef : null}
+                                           className={`py-1.5 text-lg transition-all duration-300 ease-in-out ${index === currentLyricIndex ? 'text-green-300 font-semibold scale-110 opacity-100' : 'text-neutral-400 opacity-60'}`}>
+                                            {lyric.line}
+                                        </p>
+                                    ))
+                                ) : <p className="text-neutral-400">Lyrics not available for this song.</p>}
+                            </div>
+                            {isOnline && (
+                                <div>
+                                    <h3 className="text-xl font-semibold mb-3 sticky top-0 bg-black/50 backdrop-blur-sm py-2 z-10" style={tabHeadingStyle}>Recommended</h3>
+                                    {recommendedSongs.length > 0 ? recommendedSongs.map(recSong => (
+                                         <SongItem key={`${recSong.id}-exp-rec`} song={recSong} onPlay={playSong} onDownload={downloadSong}
+                                            onRemoveDownload={removeDownloadedSong} isDownloaded={profile?.downloadedSongIds?.includes(recSong.id)} showDownloadStatus={true}
+                                        />
+                                    )) : <p className="text-neutral-400">No recommendations available right now.</p>}
+                                </div>
+                            )}
+                            {!isOnline && ( <p className="text-neutral-400 text-center mt-4">Connect to the internet to see recommendations.</p> )}
+                        </div>
+                    ) : ( 
+                        <>
+                            {activeInfoTab === 'upNext' && (
+                                <div>
+                                    <h3 className="text-lg font-semibold mb-3" style={tabHeadingStyle}>Up Next</h3>
+                                    {queue.length > 0 ? queue.map((queuedSong, index) => (
+                                        <div key={`${queuedSong.id}-${index}-tab-upnext`} className="flex items-center p-2.5 hover:bg-white/5 rounded-lg group transition-colors">
+                                            <img src={queuedSong.artworkUrl} alt={queuedSong.title} className="w-10 h-10 rounded-md mr-3 flex-shrink-0 shadow" />
+                                            <div className="flex-grow min-w-0"><p className="text-neutral-200 text-sm truncate">{queuedSong.title}</p><p className="text-neutral-500 text-xs truncate">{queuedSong.artist}</p></div>
+                                            <button onClick={() => playSong(queuedSong, queue.slice(index).map(s => s.id))} className="p-1.5 rounded-full opacity-0 group-hover:opacity-100 hover:bg-green-500 ml-2 flex-shrink-0 transition-all" aria-label={`Play ${queuedSong.title} from queue`}><Play size={18} className="text-white"/></button>
+                                        </div>
+                                    )) : <p className="text-neutral-400">Queue is empty.</p>}
+                                </div>
+                            )}
+                            {activeInfoTab === 'lyrics' && (
+                                <div className="text-center">
+                                    <h3 className="text-lg font-semibold mb-4" style={tabHeadingStyle}>Lyrics</h3>
+                                    {(song.timedLyrics && song.timedLyrics.length > 0) ? (
+                                        song.timedLyrics.map((lyric, index) => (
+                                            <p key={`${song.id}-tab-lyric-${index}`} ref={index === currentLyricIndex ? activeLyricRef : null}
+                                               className={`py-1.5 text-lg transition-all duration-300 ease-in-out ${index === currentLyricIndex ? 'text-green-300 font-semibold scale-110 opacity-100' : 'text-neutral-400 opacity-60'}`}>
+                                                {lyric.line}
+                                            </p>
+                                        ))
+                                    ) : <p className="text-neutral-400">Lyrics not available for this song.</p>}
+                                </div>
+                            )}
+                            {activeInfoTab === 'recommended' && isOnline && (
+                                <div>
+                                    <h3 className="text-lg font-semibold mb-3" style={tabHeadingStyle}>Recommended</h3>
+                                    {recommendedSongs.length > 0 ? recommendedSongs.map(recSong => (
+                                         <SongItem key={`${recSong.id}-tab-rec`} song={recSong} onPlay={playSong} onDownload={downloadSong}
+                                            onRemoveDownload={removeDownloadedSong} isDownloaded={profile?.downloadedSongIds?.includes(recSong.id)} showDownloadStatus={true}
+                                        />
+                                    )) : <p className="text-neutral-400">No recommendations available right now.</p>}
+                                </div>
+                            )}
+                             {activeInfoTab === 'recommended' && !isOnline && ( <p className="text-neutral-400 text-center mt-4">Connect to the internet to see recommendations.</p> )}
+                        </>
+                    )}
+                </div>
+            </div>
+
+            <Modal isOpen={showAddToPlaylistModal} onClose={() => setShowAddToPlaylistModal(false)} title="Add to Playlist">
+                {playlists.length > 0 ? (
+                    <div className="max-h-60 overflow-y-auto space-y-1">
+                        {playlists.map(p => (
+                            <button key={p.id} onClick={() => handleAddToPlaylist(p.id)} className="w-full text-left p-3 hover:bg-neutral-700/80 rounded-md flex items-center transition-colors">
+                                <img src={p.artworkUrl || 'https://placehold.co/40x40/555/777?text=P&font=Inter'} alt={p.name} className="w-10 h-10 rounded-md mr-3"/>
+                                {p.name}
+                            </button>
+                        ))}
+                    </div>
+                ) : <p className="text-neutral-400">No playlists available. Create one in your library.</p>}
+            </Modal>
+        </div>
+    );
+};
+
+// --- MiniPlayer ---
+const MiniPlayer = ({ song, onExpand }) => {
+    const { currentSong, playSong, queue, isPlaying, setIsPlaying: setGlobalIsPlaying, clearCurrentSongAndStopPlayback } = useAppContext();
+    const touchStartY = useRef(0);
+    const miniPlayerRef = useRef(null);
+
+    if (!currentSong) return null;
+
+    const handlePlayPause = () => setGlobalIsPlaying(!isPlaying);
+    const handleNext = () => {
+        const currentIndex = queue.findIndex(s => s.id === currentSong.id);
+        if (currentIndex !== -1 && currentIndex < queue.length - 1) {
+            playSong(queue[currentIndex + 1], queue.slice(currentIndex + 1).map(s => s.id));
+        }
+    };
+    
+    const handleTouchStart = (e) => {
+        touchStartY.current = e.targetTouches[0].clientY;
+    };
+    const handleTouchEnd = (e) => {
+        if (touchStartY.current === 0) return;
+        const touchEndY = e.changedTouches[0].clientY;
+        const deltaY = touchEndY - touchStartY.current;
+
+        if (deltaY > SWIPE_THRESHOLD) { // Swipe Down
+            clearCurrentSongAndStopPlayback();
+        }
+        touchStartY.current = 0;
+    };
+
+    const miniPlayerStyle = currentSong.themeColor ? { backgroundColor: currentSong.themeColor, color: '#FFFFFF' } : {backgroundColor: '#1f2937'};
+
+    return (
+        <div 
+            ref={miniPlayerRef}
+            onTouchStart={handleTouchStart}
+            onTouchEnd={handleTouchEnd}
+            className="fixed bottom-0 left-0 right-0 backdrop-blur-md border-t border-neutral-700/70 p-3 flex items-center justify-between z-40 shadow-2xl transition-colors duration-500 ease-in-out h-16"
+            style={miniPlayerStyle}
+        >
+            <div className="flex items-center flex-grow min-w-0 cursor-pointer" onClick={onExpand} role="button" tabIndex={0} aria-label="Expand player">
+                <img src={currentSong.artworkUrl} alt={currentSong.title} className="w-11 h-11 rounded-md mr-3 object-cover flex-shrink-0 shadow" />
+                <div className="flex-grow min-w-0">
+                    <p className="font-medium text-sm truncate" style={miniPlayerStyle.color ? {color: miniPlayerStyle.color} : {}}>{currentSong.title}</p>
+                    <p className="text-xs truncate" style={miniPlayerStyle.color ? {color: 'rgba(255,255,255,0.7)'} : {color: 'rgb(163 163 163)'}}>{currentSong.artist}</p>
+                </div>
+            </div>
+            <div className="flex items-center space-x-3 ml-2 flex-shrink-0">
+                <button onClick={handlePlayPause} className="p-2 rounded-full hover:bg-white/20 transition-colors" aria-label={isPlaying ? "Pause" : "Play"} style={miniPlayerStyle.color ? {color: miniPlayerStyle.color} : {}}>
+                    {isPlaying ? <Pause size={24} /> : <Play size={24} />}
+                </button>
+                <button onClick={handleNext} className="p-2 rounded-full hover:bg-white/20 transition-colors hidden sm:block" aria-label="Next" style={miniPlayerStyle.color ? {color: miniPlayerStyle.color} : {}}><SkipForward size={22} /></button>
+                <button onClick={onExpand} className="p-2 rounded-full hover:bg-white/20 transition-colors" aria-label="Expand player" style={miniPlayerStyle.color ? {color: miniPlayerStyle.color} : {}}><Maximize2 size={20} /></button>
+            </div>
+        </div>
+    );
+};
+
+// --- LibraryScreen ---
+const LibraryScreen = () => {
+    const { setCurrentPage, allSongs, playlists, playSong, isOnline, profile, downloadSong, removeDownloadedSong, createPlaylist, showMessage } = useAppContext();
+    const [activeTab, setActiveTab] = useState('playlists');
+    const [showCreatePlaylistModal, setShowCreatePlaylistModal] = useState(false);
+    const [newPlaylistName, setNewPlaylistName] = useState('');
+    const downloadedSongs = useMemo(() => allSongs.filter(s => profile?.downloadedSongIds?.includes(s.id)), [allSongs, profile]);
+    const displaySongs = isOnline ? allSongs : downloadedSongs;
+    const handleCreatePlaylist = async () => {
+        if (!newPlaylistName.trim()) { showMessage("Playlist name cannot be empty.", "error"); return; }
+        await createPlaylist(newPlaylistName.trim());
+        setNewPlaylistName(''); setShowCreatePlaylistModal(false);
+        showMessage(`Playlist "${newPlaylistName.trim()}" created!`, "success");
+    };
+    const handlePlayPlaylist = (playlist) => {
+        if (!playlist.songIds || playlist.songIds.length === 0) { showMessage("This playlist is empty.", "info"); return; }
+        const firstPlayableSongId = playlist.songIds.find(id => allSongs.find(s => s.id === id && s.audioUrl));
+        if (!firstPlayableSongId) { showMessage("No playable songs in this playlist.", "info"); return; }
+        const songToPlay = allSongs.find(s => s.id === firstPlayableSongId);
+
+        if (songToPlay) {
+            if (!isOnline && !profile?.downloadedSongIds?.includes(songToPlay.id)) {
+                showMessage("This song is not downloaded. Connect to internet or download it.", "warning"); return;
+            }
+            playSong(songToPlay, playlist.songIds);
+        } else { showMessage("Could not find the first song of the playlist.", "error"); }
+    };
+    return (
+        <div className="p-4 md:p-6 flex flex-col h-full"> 
+            <div className="flex items-center mb-6">
+                <button onClick={() => setCurrentPage('home')} className="p-2 text-neutral-300 hover:text-white mr-2 rounded-full hover:bg-neutral-700/50 transition-colors -ml-2" aria-label="Back to Home">
+                    <ChevronLeft size={28} />
+                </button>
+                <h1 className="text-3xl font-bold text-white">Your Library</h1>
+            </div>
+            <div className="flex space-x-1 border-b border-neutral-700/80 mb-6">
+                {['Playlists', 'Songs'].map(tab => (
+                    <button key={tab} onClick={() => setActiveTab(tab.toLowerCase())}
+                        className={`px-5 py-2.5 text-sm font-medium rounded-t-lg relative transition-colors duration-200 ${activeTab === tab.toLowerCase() ? 'text-white' : 'text-neutral-400 hover:text-neutral-100'}`}
+                        aria-selected={activeTab === tab.toLowerCase()} role="tab"
+                    >
+                        {tab}
+                        {activeTab === tab.toLowerCase() && <span className="absolute bottom-0 left-0 w-full h-0.5 bg-green-500 rounded-full"></span>}
+                    </button>
+                ))}
+            </div>
+            <div className="flex-grow overflow-y-auto" role="tabpanel">
+                {activeTab === 'playlists' && (
+                    <div className="space-y-3">
+                        <button onClick={() => setShowCreatePlaylistModal(true)}
+                            className="w-full mb-4 bg-green-600 hover:bg-green-500 text-white font-semibold py-3.5 px-4 rounded-lg transition-all duration-200 ease-in-out shadow-md hover:shadow-lg transform hover:scale-[1.01]"
+                        >Create New Playlist</button>
+                        {playlists.length > 0 ? playlists.map(playlist => (
+                            <div key={playlist.id} onClick={() => handlePlayPlaylist(playlist)} className="flex items-center p-3 hover:bg-neutral-700/80 rounded-lg cursor-pointer group transition-all duration-200 ease-in-out transform hover:scale-[1.01]" role="button" tabIndex={0} onKeyPress={(e) => e.key === 'Enter' && handlePlayPlaylist(playlist)}>
+                                <img src={playlist.artworkUrl || 'https://placehold.co/64x64/333/555?text=List&font=Inter'} alt={playlist.name} className="w-14 h-14 rounded-md mr-4 object-cover flex-shrink-0 shadow" />
+                                <div className="flex-grow min-w-0">
+                                    <p className="text-white font-medium group-hover:text-green-400 transition-colors">{playlist.name}</p>
+                                    <p className="text-neutral-400 text-sm">{playlist.songIds?.length || 0} songs</p>
+                                </div>
+                                <button className="p-2 rounded-full opacity-0 group-hover:opacity-100 hover:bg-green-500 ml-2 flex-shrink-0 transition-all transform group-hover:scale-110" aria-label={`Play playlist ${playlist.name}`}><Play size={20} className="text-white group-hover:text-black" /></button>
+                            </div>
+                        )) : <p className="text-neutral-400 text-center mt-6">No playlists yet. Create one!</p>}
+                    </div>
+                )}
+                {activeTab === 'songs' && (
+                    <div>
+                        <p className="text-neutral-400 text-sm mb-3">
+                            {isOnline ? `Showing all ${allSongs.length} songs.` : `Showing ${downloadedSongs.length} downloaded songs.`}
+                        </p>
+                        {displaySongs.map(song => (
+                            <SongItem key={song.id} song={song} onPlay={playSong} onDownload={downloadSong}
+                                onRemoveDownload={removeDownloadedSong} isDownloaded={profile?.downloadedSongIds?.includes(song.id)}
+                            />
+                        ))}
+                        {displaySongs.length === 0 && ( <p className="text-neutral-400 text-center mt-8">{isOnline ? "No songs found." : "No songs downloaded."}</p> )}
+                    </div>
+                )}
+            </div>
+            <Modal isOpen={showCreatePlaylistModal} onClose={() => setShowCreatePlaylistModal(false)} title="Create New Playlist">
+                <input type="text" value={newPlaylistName} onChange={(e) => setNewPlaylistName(e.target.value)} placeholder="Playlist Name"
+                    className="w-full p-3 bg-neutral-700 text-white rounded-lg mb-4 focus:ring-2 focus:ring-green-500 outline-none border border-neutral-600"
+                    aria-label="New playlist name"
+                />
+                <button onClick={handleCreatePlaylist}
+                    className="w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg"
+                >Create Playlist</button>
+            </Modal>
+        </div>
+    );
+};
+
+// --- SettingsScreen ---
+const SettingsScreen = () => {
+    const { setCurrentPage, isOnline, setIsOnline, profile, upgradePlan, logout, userId, showMessage, allSongs, removeDownloadedSong: globalRemoveDownloadedSong } = useAppContext();
+    const currentLimit = STORAGE_LIMITS[profile?.plan || 'free'];
+    const downloadedSongIds = profile?.downloadedSongIds || [];
+    const downloadedCount = downloadedSongIds.length;
+    
+    const downloadedSongsDetails = useMemo(() => {
+        return downloadedSongIds.map(id => allSongs.find(song => song.id === id)).filter(Boolean);
+    }, [downloadedSongIds, allSongs]);
+
+    const simulatedTotalSizeMB = useMemo(() => {
+        return downloadedSongsDetails.reduce((sum, song) => sum + (song.simulatedSizeMB || AVERAGE_SONG_SIZE_MB), 0);
+    }, [downloadedSongsDetails]);
+
+    const planCapacityMB = SIMULATED_STORAGE_CAPACITY_MB[profile?.plan || 'free'];
+
+
+    const handleUpgrade = () => {
+        if (profile.plan === 'free') { upgradePlan(); showMessage("Upgraded to Premium Plan! Enjoy more downloads.", "success"); }
+        else { showMessage("You are already on the Premium Plan.", "info"); }
+    };
+    const settingSectionClasses = "bg-neutral-800/70 p-5 rounded-xl shadow-lg";
+    const settingItemClasses = "flex items-center justify-between py-3 border-b border-neutral-700/50 last:border-b-0";
+    const settingLabelClasses = "text-neutral-300";
+    const settingValueClasses = "text-white font-medium";
+
+    return (
+        <div className="p-4 md:p-6 text-white space-y-8 h-full overflow-y-auto">
+            <div className="flex items-center mb-8">
+                 <button 
+                    onClick={() => setCurrentPage('home')} 
+                    className="p-2 rounded-full hover:bg-neutral-700/50 transition-colors mr-4 -ml-2"
+                    aria-label="Back to Home"
+                >
+                    <ChevronLeft size={28} />
+                </button>
+                <h1 className="text-3xl font-bold">Settings</h1>
+            </div>
+
+            <div className={settingSectionClasses}>
+                <h2 className="text-xl font-semibold mb-4 border-b border-neutral-700 pb-3">Account</h2>
+                <div className={settingItemClasses}>
+                    <p className={settingLabelClasses}>User ID:</p>
+                    <p className={`text-sm font-mono bg-neutral-700 px-2.5 py-1.5 rounded-md truncate max-w-[40vw] sm:max-w-[50vw] ${settingValueClasses}`}>{userId || 'N/A'}</p>
+                </div>
+                <div className={settingItemClasses}>
+                    <p className={settingLabelClasses}>Current Plan:</p>
+                    <p className={`capitalize ${settingValueClasses}`}>{profile?.plan || 'Free'}</p>
+                </div>
+                {profile?.plan === 'free' && (
+                    <button onClick={handleUpgrade}
+                        className="mt-6 w-full bg-green-600 hover:bg-green-500 text-white font-semibold py-3 px-4 rounded-lg transition-all duration-200 ease-in-out shadow-md hover:shadow-lg transform hover:scale-[1.01]"
+                    >Upgrade to Premium</button>
+                )}
+            </div>
+            <div className={settingSectionClasses}>
+                <h2 className="text-xl font-semibold mb-2">Connectivity</h2>
+                <div className={settingItemClasses}>
+                    <span className={settingLabelClasses}>Network Status:</span>
+                    <button onClick={() => setIsOnline(!isOnline)}
+                        className={`px-4 py-2 rounded-full flex items-center space-x-2 transition-all duration-200 ease-in-out text-sm font-medium ${isOnline ? 'bg-green-500 hover:bg-green-400 text-black' : 'bg-red-500 hover:bg-red-400 text-white'}`}
+                        aria-pressed={isOnline}
+                    >
+                        {isOnline ? <Wifi size={18} /> : <WifiOff size={18} />}
+                        <span>{isOnline ? 'Online' : 'Offline'}</span>
+                    </button>
+                </div>
+                {!isOnline && <p className="text-sm text-yellow-400 mt-3 px-1">You are currently offline. Some features may be limited.</p>}
+            </div>
+            
+            <div className={settingSectionClasses}>
+                <h2 className="text-xl font-semibold mb-3">Storage Management</h2>
+                <div className={settingItemClasses}>
+                    <p className={settingLabelClasses}>Downloaded Songs:</p>
+                    <p className={settingValueClasses}>{downloadedCount} / {profile?.plan === 'premium' ? STORAGE_LIMITS.premium : STORAGE_LIMITS.free}</p>
+                </div>
+                <div className={settingItemClasses}>
+                    <p className={settingLabelClasses}>Simulated Space Used:</p>
+                    <p className={settingValueClasses}>~{simulatedTotalSizeMB.toFixed(1)} MB of {(planCapacityMB / 1000).toFixed(1)} GB</p>
+                </div>
+                <div className="w-full bg-neutral-600/50 rounded-full h-3 mt-3 overflow-hidden" role="progressbar" aria-valuenow={simulatedTotalSizeMB} aria-valuemin="0" aria-valuemax={planCapacityMB}>
+                    <div className="bg-green-500 h-full rounded-full transition-all duration-300 ease-out" style={{ width: `${planCapacityMB > 0 ? (simulatedTotalSizeMB / planCapacityMB) * 100 : 0}%` }}></div>
+                </div>
+                {downloadedSongsDetails.length > 0 && (
+                    <div className="mt-6">
+                        <h3 className="text-lg font-medium text-neutral-200 mb-2">Manage Downloads:</h3>
+                        <div className="max-h-60 overflow-y-auto space-y-2 scrollbar-thin scrollbar-thumb-neutral-600 scrollbar-track-neutral-700/50 pr-2">
+                            {downloadedSongsDetails.map(song => (
+                                <div key={`storage-${song.id}`} className="flex items-center justify-between p-2.5 bg-neutral-700/50 rounded-lg">
+                                    <div className="flex items-center min-w-0">
+                                        <img src={song.artworkUrl} alt={song.title} className="w-10 h-10 rounded-md mr-3 object-cover"/>
+                                        <div className="min-w-0">
+                                            <p className="text-sm text-white truncate">{song.title}</p>
+                                            <p className="text-xs text-neutral-400 truncate">{song.artist}</p>
+                                        </div>
+                                    </div>
+                                    <button 
+                                        onClick={() => globalRemoveDownloadedSong(song.id)}
+                                        className="p-2 rounded-full text-red-500 hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0"
+                                        aria-label={`Remove ${song.title} from downloads`}
+                                    >
+                                        <Trash2 size={18}/>
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div className={settingSectionClasses}>
+                 <h2 className="text-xl font-semibold mb-2">App Info</h2>
+                 <p className={`${settingLabelClasses} text-sm`}>MusicStream Simulator v1.0.8</p>
+                 <p className="text-neutral-500 text-xs mt-1">This is a web-based simulation and does not play real audio or use actual device storage for music files.</p>
+            </div>
+            {auth && auth.currentUser && !auth.currentUser.isAnonymous && (
+                 <button onClick={logout}
+                    className="w-full bg-red-600 hover:bg-red-500 text-white font-semibold py-3.5 px-4 rounded-lg transition-all duration-200 ease-in-out flex items-center justify-center space-x-2 shadow-md hover:shadow-lg"
+                ><LogOut size={20} /><span>Logout</span></button>
+            )}
+        </div>
+    );
+};
+
+
+// --- Main App ---
+const App = () => {
+    const [currentPage, setCurrentPage] = useState('home');
+    const [currentSong, setCurrentSongState] = useState(null);
+    const [queue, setQueueState] = useState([]);
+    const [isPlayerScreenVisible, setIsPlayerScreenVisible] = useState(false);
+    const [isOnline, setIsOnlineState] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    const [profile, setProfile] = useState({ plan: 'free', downloadedSongIds: [], isOnline: true });
+    const [allSongs, setAllSongs] = useState([]);
+    const [playlists, setPlaylists] = useState([]);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [message, setMessage] = useState({ text: '', type: '' });
+    const [isPlaying, setIsPlayingState] = useState(false);
+    const audioRef = useRef(null);
+    const [currentAudioTime, setCurrentAudioTime] = useState(0);
+    const [audioDuration, setAudioDuration] = useState(0);
+    
+    const profileRef = useMemo(() => userId && db ? doc(db, `artifacts/${appId}/users/${userId}/profile/settings`) : null, [userId, appId, db]);
+    const songsCollectionRef = useMemo(() => userId && db ? collection(db, `artifacts/${appId}/users/${userId}/songs`) : null, [userId, appId, db]);
+    const playlistsCollectionRef = useMemo(() => userId && db ? collection(db, `artifacts/${appId}/users/${userId}/playlists`) : null, [userId, appId, db]);
+    const queueRef = useMemo(() => userId && db ? doc(db, `artifacts/${appId}/users/${userId}/player/queue`) : null, [userId, appId, db]);
+
+    const showMessage = (text, type = 'info', duration = 3000) => {
+        setMessage({ text, type });
+        setTimeout(() => setMessage({ text: '', type: '' }), duration);
+    };
+
+    const onTimeUpdate = () => { if (audioRef.current) setCurrentAudioTime(audioRef.current.currentTime); };
+    const onLoadedMetadata = () => { if (audioRef.current) setAudioDuration(audioRef.current.duration); };
+    const onEnded = () => {
+        const playerScreen = document.querySelector('[data-repeat-mode]');
+        const repeatMode = playerScreen?.dataset?.repeatMode || 'none';
+        if (repeatMode === 'one' && audioRef.current) {
+             audioRef.current.play().catch(e => console.warn("Autoplay after loop prevented:", e));
+        } else {
+            handleNextSong(repeatMode === 'all');
+        }
+    };
+
+    useEffect(() => {
+        if (audioRef.current) {
+            if (currentSong && currentSong.audioUrl) {
+                if (audioRef.current.src !== currentSong.audioUrl) {
+                    audioRef.current.src = currentSong.audioUrl;
+                    audioRef.current.load();
+                    setAudioDuration(0); setCurrentAudioTime(0);
+                }
+                if (isPlaying) audioRef.current.play().catch(e => console.warn("Autoplay prevented:", e));
+                else audioRef.current.pause();
+            } else {
+                audioRef.current.pause();
+                if (audioRef.current.src) audioRef.current.src = "";
+            }
+        }
+    }, [currentSong, isPlaying]);
+
+    const setCurrentTime = (time) => {
+        if (audioRef.current && isFinite(time)) {
+            audioRef.current.currentTime = time;
+            setCurrentAudioTime(time);
+        }
+    };
+
+    const clearCurrentSongAndStopPlayback = useCallback(() => {
+        if (audioRef.current) {
+            audioRef.current.pause();
+            audioRef.current.src = "";
+        }
+        setCurrentSongState(null);
+        setIsPlayingState(false);
+        setIsPlayerScreenVisible(false);
+        setQueueState([]); 
+        if (queueRef) { 
+            setDoc(queueRef, { currentSongId: null, songIds: [] }).catch(e => console.error("Error clearing queue in DB:", e));
+        }
+    }, [queueRef]);
+
+
+    useEffect(() => {
+        if (!auth) {
+            setIsAuthReady(true); setIsLoading(false);
+            setUserId(`mock-user-${crypto.randomUUID()}`);
+            setAllSongs(MOCK_SONGS.map(s => ({...s, timedLyrics: s.timedLyrics || [], durationSeconds: s.durationSeconds || (s.audioUrl ? 0 : (parseInt(s.duration.split(':')[0])*60 + parseInt(s.duration.split(':')[1]))), themeColor: s.themeColor || '#333333', simulatedSizeMB: s.simulatedSizeMB || AVERAGE_SONG_SIZE_MB })));
+            setPlaylists(MOCK_PLAYLISTS);
+            setProfile({ plan: 'free', downloadedSongIds: [], isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true });
+            return;
+        }
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+            if (user) setUserId(user.uid);
+            else {
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) await signInWithCustomToken(auth, __initial_auth_token);
+                    else await signInAnonymously(auth);
+                } catch (error) { console.error("Error during sign-in:", error); setUserId(`anon-user-${crypto.randomUUID()}`); }
+            }
+            setIsAuthReady(true);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    useEffect(() => {
+        if (!isAuthReady || !userId || !db) {
+            if (isAuthReady && !db) setIsLoading(false);
+            return;
+        }
+        setIsLoading(true);
+        let unsubs = [];
+        const loadProfile = () => {
+            if (!profileRef) return;
+            unsubs.push(onSnapshot(profileRef, (docSnap) => {
+                 if (docSnap.exists()) setProfile(prev => ({...prev, ...docSnap.data()}));
+                 else {
+                     const initialProfile = { plan: 'free', downloadedSongIds: [], isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true };
+                     setDoc(profileRef, initialProfile).catch(e => console.error("Error setting initial profile:", e));
+                     setProfile(initialProfile);
+                 }
+            }, e => console.error("Error loading profile snapshot:", e)));
+        };
+        const loadSongs = () => {
+            if (!songsCollectionRef) return;
+            unsubs.push(onSnapshot(query(songsCollectionRef), async (querySnapshot) => {
+                let fetchedSongs = [];
+                querySnapshot.forEach((doc) => fetchedSongs.push({ id: doc.id, ...doc.data() }));
+                const songsWithDetails = fetchedSongs.map(s => ({...s, timedLyrics: s.timedLyrics || [], durationSeconds: s.durationSeconds || (s.audioUrl ? 0 : (parseInt(s.duration.split(':')[0])*60 + parseInt(s.duration.split(':')[1]))), themeColor: s.themeColor || '#333333', simulatedSizeMB: s.simulatedSizeMB || AVERAGE_SONG_SIZE_MB }));
+                if (songsWithDetails.length === 0 && MOCK_SONGS.length > 0) {
+                    const batch = writeBatch(db);
+                    MOCK_SONGS.forEach(song => {
+                        const songDocRef = doc(songsCollectionRef, song.id);
+                        batch.set(songDocRef, { ...song, timedLyrics: song.timedLyrics || [], durationSeconds: song.durationSeconds || (song.audioUrl ? 0 : (parseInt(song.duration.split(':')[0])*60 + parseInt(song.duration.split(':')[1]))), themeColor: song.themeColor || '#333333', simulatedSizeMB: song.simulatedSizeMB || AVERAGE_SONG_SIZE_MB, isDownloaded: false });
+                    });
+                    try { await batch.commit(); } catch (e) { console.error("Error batch writing songs:", e); }
+                } else setAllSongs(songsWithDetails);
+            }, e => console.error("Error onSnapshot songs:", e)));
+        };
+        const loadPlaylists = () => {
+            if (!playlistsCollectionRef) return;
+            unsubs.push(onSnapshot(query(playlistsCollectionRef), async (querySnapshot) => {
+                let fetchedPlaylists = [];
+                querySnapshot.forEach((doc) => fetchedPlaylists.push({ id: doc.id, ...doc.data() }));
+                if (fetchedPlaylists.length === 0 && MOCK_PLAYLISTS.length > 0) {
+                    const batch = writeBatch(db);
+                    MOCK_PLAYLISTS.forEach(pl => batch.set(doc(playlistsCollectionRef, pl.id), pl));
+                    try { await batch.commit(); } catch (e) { console.error("Error batch writing playlists:", e); }
+                } else setPlaylists(fetchedPlaylists);
+            }, e => console.error("Error onSnapshot playlists:", e)));
+        };
+        loadProfile(); loadSongs(); loadPlaylists();
+        setIsLoading(false);
+        return () => { unsubs.forEach(unsub => unsub()); };
+    }, [isAuthReady, userId, db]);
+
+     useEffect(() => {
+        if (isAuthReady && userId && db && allSongs.length > 0 && queueRef) {
+            let unsubQueue = onSnapshot(queueRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    const songObjects = data.songIds?.map(id => allSongs.find(s => s.id === id)).filter(Boolean) || [];
+                    setQueueState(songObjects);
+                    const current = allSongs.find(s => s.id === data.currentSongId);
+                    if(current) { if (current.id !== currentSong?.id) setCurrentSongState(current); }
+                    else if (songObjects.length > 0 && songObjects[0].id !== currentSong?.id) setCurrentSongState(songObjects[0]);
+                } else setDoc(queueRef, { currentSongId: null, songIds: [] }).catch(e => console.error("Error setting initial queue:", e));
+            }, e => console.error("Error onSnapshot queue:", e));
+            return () => unsubQueue();
+        }
+    }, [isAuthReady, userId, db, allSongs, queueRef, currentSong?.id]);
+
+    useEffect(() => {
+        const handleOnline = () => { setIsOnlineState(true); if(profileRef) updateDoc(profileRef, { isOnline: true }).catch(e => console.error("Error updating online status (online):", e)); showMessage("You are back online!", "success"); }
+        const handleOffline = () => { setIsOnlineState(false); if(profileRef) updateDoc(profileRef, { isOnline: false }).catch(e => console.error("Error updating online status (offline):", e)); showMessage("You are offline. Functionality may be limited.", "warning");}
+        if (typeof window !== "undefined") {
+            window.addEventListener('online', handleOnline); window.addEventListener('offline', handleOffline);
+        }
+        if (profile && profile.hasOwnProperty('isOnline') && profile.isOnline !== isOnline) {
+            setIsOnlineState(profile.isOnline);
+        }
+        return () => {
+            if (typeof window !== "undefined") {
+                window.removeEventListener('online', handleOnline); window.removeEventListener('offline', handleOffline);
+            }
+        };
+    }, [profileRef, profile?.isOnline, isOnline, showMessage]);
+    
+    const setIsOnline = async (onlineStatus) => {
+        setIsOnlineState(onlineStatus);
+        if (profileRef) {
+            try { await updateDoc(profileRef, { isOnline: onlineStatus }); } 
+            catch (error) { console.error("Error setting online status in DB:", error); }
+        }
+    };
+
+    const playSong = useCallback(async (song, newQueueSongIds) => {
+        if (!song) return;
+        if (!song.audioUrl) {
+            showMessage("This song is not playable in this demo.", "info"); return;
+        }
+        if (!isOnline && !profile?.downloadedSongIds?.includes(song.id)) {
+            showMessage("This song is not downloaded. Connect to internet or download it.", "warning"); return;
+        }
+        setCurrentSongState(song); setIsPlayingState(true);
+        let newQueueObjects = [];
+        if (newQueueSongIds && newQueueSongIds.length > 0) {
+            newQueueObjects = newQueueSongIds.map(id => allSongs.find(s => s.id === id)).filter(Boolean);
+        } else {
+            const albumSongs = allSongs.filter(s => s.album === song.album && s.id !== song.id);
+            const otherSongs = allSongs.filter(s => s.album !== song.album);
+            newQueueObjects = [song, ...albumSongs, ...otherSongs.sort(() => 0.5 - Math.random())].slice(0, 20);
+        }
+        const currentSongInQueueIndex = newQueueObjects.findIndex(s => s.id === song.id);
+        if (currentSongInQueueIndex > 0) newQueueObjects = [song, ...newQueueObjects.slice(0, currentSongInQueueIndex), ...newQueueObjects.slice(currentSongInQueueIndex + 1)];
+        else if (currentSongInQueueIndex === -1) newQueueObjects = [song, ...newQueueObjects];
+        setQueueState(newQueueObjects);
+        if (queueRef) {
+            try { await setDoc(queueRef, { currentSongId: song.id, songIds: newQueueObjects.map(s => s.id) }); } 
+            catch (error) { console.error("Error setting queue in DB:", error); }
+        }
+        setIsPlayerScreenVisible(true);
+    }, [isOnline, profile, allSongs, queueRef, showMessage]);
+
+    const handleNextSong = useCallback(async (isRepeatAll = false) => {
+        if (!currentSong || queue.length === 0) return;
+        const currentIndex = queue.findIndex(s => s.id === currentSong.id);
+        let nextIndex = (currentIndex + 1);
+        if (nextIndex >= queue.length) {
+            if (isRepeatAll) nextIndex = 0;
+            else { setIsPlayingState(false); showMessage("End of queue.", "info"); return; }
+        }
+        let nextPlayableSong = null; let searchIndex = nextIndex; let attempts = 0;
+        while(attempts < queue.length) {
+            const potentialNextSong = queue[searchIndex % queue.length];
+            if (potentialNextSong && potentialNextSong.audioUrl) {
+                 if (!isOnline && !profile?.downloadedSongIds?.includes(potentialNextSong.id)) { /* Skip */ } 
+                 else { nextPlayableSong = potentialNextSong; break; }
+            }
+            searchIndex++; attempts++;
+        }
+        if (nextPlayableSong) {
+            setCurrentSongState(nextPlayableSong); setIsPlayingState(true);
+            if (queueRef) { try { await updateDoc(queueRef, { currentSongId: nextPlayableSong.id }); } catch (e) { console.error("Error updating next song in DB:", e); }}
+        } else {
+             showMessage(isOnline ? "No more playable songs in queue." : "No more downloaded playable songs in queue.", "info");
+             setIsPlayingState(false);
+        }
+    }, [currentSong, queue, isOnline, profile, queueRef, showMessage, setIsPlayingState]);
+
+    const handlePrevSong = useCallback(async () => {
+        if (!currentSong || queue.length === 0) return;
+        const currentIndex = queue.findIndex(s => s.id === currentSong.id);
+        let prevIndex = (currentIndex - 1 + queue.length) % queue.length;
+        let prevPlayableSong = null; let searchIndex = prevIndex; let attempts = 0;
+        while(attempts < queue.length) {
+            const potentialPrevSong = queue[(searchIndex + queue.length) % queue.length];
+             if (potentialPrevSong && potentialPrevSong.audioUrl) {
+                 if (!isOnline && !profile?.downloadedSongIds?.includes(potentialPrevSong.id)) { /* Skip */ } 
+                 else { prevPlayableSong = potentialPrevSong; break; }
+            }
+            searchIndex--; attempts++;
+        }
+        if (prevPlayableSong) {
+            setCurrentSongState(prevPlayableSong); setIsPlayingState(true);
+            if (queueRef) { try { await updateDoc(queueRef, { currentSongId: prevPlayableSong.id }); } catch (e) { console.error("Error updating prev song in DB:", e); }}
+        } else {
+            showMessage(isOnline ? "No previous playable songs in queue." : "No previous downloaded playable songs.", "info");
+        }
+    }, [currentSong, queue, isOnline, profile, queueRef, showMessage, setIsPlayingState]);
+
+    const downloadSong = useCallback(async (songId) => {
+        if (!isOnline) { showMessage("Cannot download songs while offline.", "error"); return; }
+        if (!profileRef || !songsCollectionRef || !db) { showMessage("Database not ready for downloads.", "error"); return; }
+        const songToDownload = allSongs.find(s => s.id === songId);
+        if (!songToDownload || !songToDownload.audioUrl) {
+            showMessage("This song is not available for download (demo).", "info"); return;
+        }
+        try {
+            await runTransaction(db, async (transaction) => {
+                const profileDoc = await transaction.get(profileRef);
+                if (!profileDoc.exists()) throw new Error("Profile does not exist.");
+                const currentProfileData = profileDoc.data();
+                const currentDownloadedIds = currentProfileData.downloadedSongIds || [];
+                const currentPlan = currentProfileData.plan || 'free';
+                if (currentDownloadedIds.length >= STORAGE_LIMITS[currentPlan]) {
+                    showMessage(`Storage limit for ${currentPlan} plan reached. Upgrade for more downloads.`, "warning"); return;
+                }
+                if (!currentDownloadedIds.includes(songId)) {
+                    const newDownloadedIds = [...currentDownloadedIds, songId];
+                    transaction.update(profileRef, { downloadedSongIds: newDownloadedIds });
+                    transaction.update(doc(songsCollectionRef, songId), { isDownloaded: true });
+                    showMessage("Song downloaded!", "success");
+                } else { showMessage("Song already downloaded.", "info"); }
+            });
+        } catch (e) { console.error("Error downloading song:", e); showMessage("Failed to download song. Please try again.", "error"); }
+    }, [isOnline, profileRef, songsCollectionRef, db, showMessage, allSongs]);
+
+    const removeDownloadedSong = useCallback(async (songId) => {
+        if (!profileRef || !songsCollectionRef || !db) { showMessage("Database not ready for download removal.", "error"); return; }
+        try {
+            await runTransaction(db, async (transaction) => {
+                const profileDoc = await transaction.get(profileRef);
+                if (!profileDoc.exists()) throw new Error("Profile does not exist.");
+                const currentProfileData = profileDoc.data();
+                const currentDownloadedIds = currentProfileData.downloadedSongIds || [];
+                if (currentDownloadedIds.includes(songId)) {
+                    const newDownloadedIds = currentDownloadedIds.filter(id => id !== songId);
+                    transaction.update(profileRef, { downloadedSongIds: newDownloadedIds });
+                    transaction.update(doc(songsCollectionRef, songId), { isDownloaded: false });
+                    showMessage("Song removed from downloads.", "success");
+                }
+            });
+        } catch (e) { console.error("Error removing download:", e); showMessage("Failed to remove download. Please try again.", "error"); }
+    }, [profileRef, songsCollectionRef, db, showMessage]);
+
+    const upgradePlan = useCallback(async () => {
+        if (profileRef) {
+            try { await updateDoc(profileRef, { plan: 'premium' }); } 
+            catch (error) { console.error("Error upgrading plan:", error); showMessage("Failed to upgrade plan.", "error"); }
+        }
+    }, [profileRef, showMessage]);
+
+    const logout = useCallback(async () => {
+        if (auth) {
+            try {
+                await auth.signOut();
+                setCurrentPage('home'); setCurrentSongState(null); setQueueState([]); setIsPlayerScreenVisible(false);
+                showMessage("Logged out successfully.", "success");
+            } catch (error) { console.error("Error logging out:", error); showMessage("Logout failed.", "error"); }
+        }
+    }, [auth, showMessage]);
+
+    const createPlaylist = useCallback(async (name) => {
+        if (!playlistsCollectionRef || !userId || !db) { showMessage("Database not ready to create playlist.", "error"); return; }
+        const newPlaylistRef = doc(collection(db, `artifacts/${appId}/users/${userId}/playlists`));
+        const newPlaylist = {
+            id: newPlaylistRef.id, name, songIds: [], createdAt: serverTimestamp(),
+            artworkUrl: `https://placehold.co/200x200/38a169/c6f6d5?text=${encodeURIComponent(name.substring(0,1))}&font=Inter`
+        };
+        try { await setDoc(newPlaylistRef, newPlaylist); } 
+        catch(error) { console.error("Error creating playlist:", error); showMessage("Failed to create playlist.", "error"); }
+    }, [playlistsCollectionRef, userId, appId, db, showMessage]);
+
+    const addSongToPlaylist = useCallback(async (playlistId, songId) => {
+        if (!playlistsCollectionRef || !songId) { showMessage("Error adding song to playlist.", "error"); return; }
+        const playlistDocRef = doc(playlistsCollectionRef, playlistId);
+        try {
+            const playlistDoc = await getDoc(playlistDocRef);
+            if (playlistDoc.exists()) {
+                const playlistData = playlistDoc.data();
+                const songIds = playlistData.songIds || [];
+                if (!songIds.includes(songId)) {
+                    await updateDoc(playlistDocRef, { songIds: [...songIds, songId] });
+                    showMessage("Song added to playlist!", "success");
+                } else { showMessage("Song already in this playlist.", "info"); }
+            }
+        } catch (error) { console.error("Error adding song to playlist:", error); showMessage("Failed to add song. Please try again.", "error"); }
+    }, [playlistsCollectionRef, showMessage]);
+
+
+    const contextValue = {
+        currentPage, setCurrentPage, currentSong, playSong, queue, setQueue: setQueueState,
+        isPlayerScreenVisible, setIsPlayerScreenVisible, isOnline, setIsOnline,
+        profile, upgradePlan, allSongs, playlists, downloadSong, removeDownloadedSong,
+        logout, userId, showMessage, createPlaylist, addSongToPlaylist,
+        isPlaying, setIsPlaying: setIsPlayingState,
+        audioRef, setCurrentTime, currentAudioTime, audioDuration,
+        clearCurrentSongAndStopPlayback,
+    };
+
+    let CurrentScreenComponent;
+    switch (currentPage) {
+        case 'search': CurrentScreenComponent = SearchScreen; break;
+        case 'library': CurrentScreenComponent = LibraryScreen; break;
+        case 'settings': CurrentScreenComponent = SettingsScreen; break;
+        case 'home': default: CurrentScreenComponent = HomeScreen; break;
+    }
+    if (isLoading && !db && !auth) {
+        return (
+            <div className="bg-neutral-900 text-white h-screen flex flex-col items-center justify-center p-4 text-center">
+                <Music2 size={64} className="mb-4 text-red-500" />
+                <p className="text-xl">Error Initializing App</p>
+                <p className="text-sm text-neutral-400 mt-2">Could not connect to services. Please check configuration.</p>
+            </div>
+        );
+    }
+    if (isLoading || (!isAuthReady && auth)) {
+        return (
+            <div className="bg-neutral-900 text-white h-screen flex flex-col items-center justify-center">
+                <Music2 size={64} className="mb-4 animate-pulse text-green-500" />
+                <p className="text-xl">{!isAuthReady && auth ? "Authenticating..." : "Loading Your Musicverse..."}</p>
+            </div>
+        );
+    }
+   
+    return (
+        <AppContext.Provider value={contextValue}>
+            <audio 
+                ref={audioRef} 
+                onTimeUpdate={onTimeUpdate}
+                onLoadedMetadata={onLoadedMetadata}
+                onEnded={onEnded}
+                preload="metadata"
+            />
+            <div className="bg-neutral-900 text-white h-screen flex flex-col overflow-hidden antialiased font-sans">
+                {message.text && (
+                    <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 px-6 py-3 rounded-lg shadow-xl z-[100] text-white transition-all duration-300 ease-in-out
+                        ${message.type === 'success' ? 'bg-green-600' : message.type === 'error' ? 'bg-red-600' : 'bg-blue-600'}`}>
+                        {message.text}
+                    </div>
+                )}
+                <main className={`flex-grow overflow-y-auto scrollbar-thin scrollbar-thumb-neutral-700 scrollbar-track-neutral-800/50 ${currentSong && !isPlayerScreenVisible ? 'pb-16' : 'pb-0'}`}>
+                    {CurrentScreenComponent ? <CurrentScreenComponent /> : <div>Component not found for page: {currentPage}</div>}
+                </main>
+                {currentSong && !isPlayerScreenVisible && (
+                    <MiniPlayer song={currentSong} onExpand={() => setIsPlayerScreenVisible(true)} />
+                )}
+                {currentSong && 
+                    <PlayerScreen 
+                        song={currentSong} onClose={() => setIsPlayerScreenVisible(false)} 
+                        onNext={() => handleNextSong(audioRef.current?.loop === false && document.querySelector('[data-repeat-mode]')?.dataset?.repeatMode === 'all')}
+                        onPrev={handlePrevSong}
+                        queue={queue} isFullScreen={isPlayerScreenVisible}
+                    />
+                }
+            </div>
+        </AppContext.Provider>
+    );
+};
+
+export default App;
